@@ -1,0 +1,92 @@
+name: Daily AI/ML GitHub Engineer
+
+on:
+  schedule:
+    # 9:00 AM Asia/Kolkata (UTC+5:30) == 03:30 UTC
+    - cron: "30 3 * * *"
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: "Optional target issue (owner/repo#number). Leave blank for auto-discovery."
+        required: false
+        default: ""
+      model:
+        description: "Gemini model name"
+        required: false
+        default: "gemini-2.5-flash"
+
+permissions:
+  contents: write
+
+jobs:
+  solve-and-distill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install aiml-engineer
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Verify GEMINI_API_KEY secret
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          if [ -z "$GEMINI_API_KEY" ]; then
+            echo "::error::GEMINI_API_KEY secret is not set. Add it under Settings -> Secrets and variables -> Actions."
+            exit 1
+          fi
+
+      - name: Run autonomous AI/ML engineer
+        id: agent_run
+        continue-on-error: true
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          MODEL="${{ inputs.model || 'gemini-2.5-flash' }}"
+          ISSUE="${{ inputs.issue }}"
+          if [ -n "$ISSUE" ]; then
+            aiml-engineer run --provider gemini --model "$MODEL" --issue "$ISSUE"
+          else
+            aiml-engineer run --provider gemini --model "$MODEL"
+          fi
+
+      - name: Export updated SFT/DPO datasets & status
+        if: always()
+        run: |
+          aiml-engineer export-data
+          echo "### aiml-engineer Status" >> "$GITHUB_STEP_SUMMARY"
+          echo '```json' >> "$GITHUB_STEP_SUMMARY"
+          aiml-engineer status >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload PR drafts artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-drafts
+          path: drafts/
+          if-no-files-found: ignore
+
+      - name: Commit updated drafts, playbook, and trajectories
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add drafts/ PLAYBOOK.md runs_log.jsonl trajectories/ eval/ training_data/
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: record daily aiml-engineer run"
+            git push
+          else
+            echo "No workspace updates to commit."
+          fi

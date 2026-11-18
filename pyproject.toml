@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aiml-engineer"
+version = "0.1.0"
+description = "Standalone self-improving AI/ML GitHub engineer with Antigravity trajectory distillation, replay evaluation, and LoRA/DPO fine-tuning."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "ruff>=0.6"]
+train = [
+    "torch>=2.2",
+    "transformers>=4.45",
+    "peft>=0.13",
+    "trl>=0.12",
+    "datasets>=2.20",
+    "accelerate>=0.34",
+]
+mlx = ["mlx-lm>=0.19"]
+
+[project.scripts]
+aiml-engineer = "aiml_engineer.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["aiml_engineer*", "agent_tools*"]
+
+[tool.ruff]
+line-length = 100
+extend-exclude = ["repos", "training_outputs"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
