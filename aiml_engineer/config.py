@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 DEFAULT_MODELS = {
-    "gemini": "gemini-2.5-flash",
+    "gemini": "gemini-3.8-flash",
     "openai": "gpt-4o-mini",
     "ollama": "qwen2.5-coder:14b",
     "mlx": "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit",
@@ -40,7 +40,7 @@ class AgentConfig:
         self.workspace_dir = Path(self.workspace_dir).resolve()
         self.provider = self.provider.lower()
         if not self.model:
-            self.model = DEFAULT_MODELS.get(self.provider, "gemini-2.5-flash")
+            self.model = DEFAULT_MODELS.get(self.provider, "gemini-3.8-flash")
         if not self.api_key:
             if self.provider == "gemini":
                 self.api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")

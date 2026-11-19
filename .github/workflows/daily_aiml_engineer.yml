@@ -2,8 +2,8 @@ name: Daily AI/ML GitHub Engineer
 
 on:
   schedule:
-    # 9:00 AM Asia/Kolkata (UTC+5:30) == 03:30 UTC
-    - cron: "30 3 * * *"
+    # ~9:13 AM Asia/Kolkata (UTC+5:30) == 03:43 UTC (off-minute avoids :00/:30 queue drops)
+    - cron: "43 3 * * *"
   workflow_dispatch:
     inputs:
       issue:
@@ -13,7 +13,7 @@ on:
       model:
         description: "Gemini model name"
         required: false
-        default: "gemini-2.5-flash"
+        default: "gemini-3.8-flash"
 
 permissions:
   contents: write
@@ -48,17 +48,25 @@ jobs:
 
       - name: Run autonomous AI/ML engineer
         id: agent_run
-        continue-on-error: true
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          MODEL="${{ inputs.model || 'gemini-2.5-flash' }}"
+          set +e
+          MODEL="${{ inputs.model || 'gemini-3.8-flash' }}"
           ISSUE="${{ inputs.issue }}"
           if [ -n "$ISSUE" ]; then
-            aiml-engineer run --provider gemini --model "$MODEL" --issue "$ISSUE"
+            aiml-engineer run --provider gemini --model "$MODEL" --issue "$ISSUE" 2>&1 | tee /tmp/agent_run.log
           else
-            aiml-engineer run --provider gemini --model "$MODEL"
+            aiml-engineer run --provider gemini --model "$MODEL" 2>&1 | tee /tmp/agent_run.log
+          fi
+          RUN_EXIT=${PIPESTATUS[0]}
+          echo "exit_code=$RUN_EXIT" >> "$GITHUB_OUTPUT"
+          if [ "$RUN_EXIT" -ne 0 ]; then
+            echo "### Agent Run Failed (exit $RUN_EXIT)" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            tail -n 40 /tmp/agent_run.log >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Export updated SFT/DPO datasets & status
@@ -90,3 +98,9 @@ jobs:
           else
             echo "No workspace updates to commit."
           fi
+
+      - name: Fail job if agent run failed
+        if: steps.agent_run.outputs.exit_code != '0'
+        run: |
+          echo "aiml-engineer run failed with exit code ${{ steps.agent_run.outputs.exit_code }}."
+          exit 1

@@ -5,7 +5,13 @@ from __future__ import annotations
 import pytest
 
 from aiml_engineer.config import AgentConfig
-from aiml_engineer.providers import MockProvider, build_provider, parse_action_response
+from aiml_engineer.providers import (
+    GeminiProvider,
+    MockProvider,
+    _redact_url,
+    build_provider,
+    parse_action_response,
+)
 from aiml_engineer.tools import RepoToolkit
 
 
@@ -64,3 +70,37 @@ def test_repo_toolkit_sandbox_and_file_ops(tmp_path):
     search_res = kit.execute("search_code", {"pattern": r"return a \+ b"})
     assert search_res.ok
     assert "src/mod.py:2:" in search_res.output
+
+
+def test_gemini_interactions_provider_and_redaction(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_post(url, payload, headers):
+        captured["url"] = url
+        captured["payload"] = payload
+        captured["headers"] = headers
+        return {
+            "steps": [
+                {
+                    "type": "model_output",
+                    "content": [{"type": "text", "text": '{"thought":"ok","tool":"git_status","args":{}}'}],
+                }
+            ]
+        }
+
+    monkeypatch.setattr("aiml_engineer.providers._post_json", fake_post)
+    cfg = AgentConfig(provider="gemini", api_key="secret-test-key")
+    assert cfg.model == "gemini-3.8-flash"
+
+    out = GeminiProvider(cfg).complete(
+        [
+            {"role": "system", "content": "You are an engineer."},
+            {"role": "user", "content": "Check status."},
+        ]
+    )
+    assert '"tool":"git_status"' in out
+    assert captured["url"] == GeminiProvider.INTERACTIONS_URL
+    assert captured["headers"] == {"x-goog-api-key": "secret-test-key"}
+    assert captured["payload"]["model"] == "gemini-3.8-flash"
+    assert captured["payload"]["system_instruction"] == "You are an engineer."
+    assert _redact_url("https://example.com?key=abc123&foo=bar") == "https://example.com?key=***&foo=bar"

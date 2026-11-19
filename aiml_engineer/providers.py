@@ -65,6 +65,10 @@ def parse_action_response(text: str) -> AgentAction:
     )
 
 
+def _redact_url(url: str) -> str:
+    return re.sub(r"([?&]key=)[^&]+", r"\1***", url)
+
+
 def _post_json(
     url: str,
     payload: dict[str, Any],
@@ -73,6 +77,7 @@ def _post_json(
 ) -> dict[str, Any]:
     data = json.dumps(payload).encode("utf-8")
     transient_codes = {429, 500, 502, 503, 504}
+    safe_url = _redact_url(url)
     for attempt in range(max_retries + 1):
         req = urllib.request.Request(
             url,
@@ -88,13 +93,13 @@ def _post_json(
             if exc.code in transient_codes and attempt < max_retries:
                 time.sleep(min(2**attempt, 8))
                 continue
-            raise RuntimeError(f"HTTP {exc.code} from {url}: {body[:400]}") from exc
+            raise RuntimeError(f"HTTP {exc.code} from {safe_url}: {body[:400]}") from exc
         except urllib.error.URLError as exc:
             if attempt < max_retries:
                 time.sleep(min(2**attempt, 8))
                 continue
-            raise RuntimeError(f"Connection error to {url}: {exc.reason}") from exc
-    raise RuntimeError(f"Exhausted retries for {url}")
+            raise RuntimeError(f"Connection error to {safe_url}: {exc.reason}") from exc
+    raise RuntimeError(f"Exhausted retries for {safe_url}")
 
 
 class BaseProvider(ABC):
@@ -109,42 +114,54 @@ class BaseProvider(ABC):
 
 
 class GeminiProvider(BaseProvider):
-    """Google Gemini REST API adapter (no external SDK required)."""
+    """Google Gemini Interactions REST API adapter (no external SDK required)."""
 
-    API_ROOT = "https://generativelanguage.googleapis.com/v1beta"
+    INTERACTIONS_URL = "https://generativelanguage.googleapis.com/v1/interactions"
 
     def complete(self, messages: list[dict[str, str]]) -> str:
         if not self.config.api_key:
             raise RuntimeError("GEMINI_API_KEY (or GOOGLE_API_KEY) is required for GeminiProvider.")
 
-        system_parts: list[dict[str, str]] = []
-        contents: list[dict[str, Any]] = []
+        system_parts: list[str] = []
+        turns: list[dict[str, Any]] = []
         for msg in messages:
             role = msg["role"]
             text = msg["content"]
             if role == "system":
-                system_parts.append({"text": text})
+                system_parts.append(text)
             else:
-                gemini_role = "model" if role == "assistant" else "user"
-                contents.append({"role": gemini_role, "parts": [{"text": text}]})
+                step_type = "model_output" if role == "assistant" else "user_input"
+                turns.append({"type": step_type, "content": [{"type": "text", "text": text}]})
 
         body: dict[str, Any] = {
-            "contents": contents,
-            "generationConfig": {
-                "temperature": self.config.temperature,
-                "responseMimeType": "application/json",
-            },
+            "model": self.config.model,
+            "input": turns,
+            "generation_config": {"temperature": self.config.temperature},
         }
         if system_parts:
-            body["systemInstruction"] = {"parts": system_parts}
+            body["system_instruction"] = "\n\n".join(system_parts)
 
-        url = f"{self.API_ROOT}/models/{self.config.model}:generateContent?key={self.config.api_key}"
-        resp = _post_json(url, body, headers={})
-        candidates = resp.get("candidates") or []
-        if not candidates:
-            raise RuntimeError(f"Gemini returned no candidates: {resp}")
-        parts = candidates[0].get("content", {}).get("parts") or []
-        return "".join(part.get("text", "") for part in parts)
+        resp = _post_json(
+            self.INTERACTIONS_URL,
+            body,
+            headers={"x-goog-api-key": self.config.api_key},
+        )
+        texts: list[str] = []
+        for step in resp.get("steps") or []:
+            if step.get("type") == "model_output":
+                for item in step.get("content") or []:
+                    if item.get("type") == "text" and item.get("text"):
+                        texts.append(item["text"])
+        if texts:
+            return "".join(texts)
+
+        # Fallback for alternate interaction output payloads
+        for item in resp.get("outputs") or []:
+            if item.get("type") == "text" and item.get("text"):
+                texts.append(item["text"])
+        if texts:
+            return "".join(texts)
+        raise RuntimeError(f"Gemini Interactions API returned no text output: {resp}")
 
 
 class OpenAICompatibleProvider(BaseProvider):

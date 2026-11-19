@@ -45,6 +45,8 @@ This file is read at the **start** of every automated run and updated at the **e
 - **Rich CLI Table Tests:** Adding a column to a `rich.table.Table` shrinks other columns under `CliRunner`'s 80-column default and can trigger cell truncation (`…`). Run all related CLI tests and pass `env={"COLUMNS": "200"}` when asserting full cell text.
 - **SQLite Newest-Row Tie-Breaking:** Never rely on `ORDER BY started_at DESC LIMIT 1` alone; add `, id DESC` so back-to-back inserts within the same timestamp deterministically return the newest row, and test by patching `_now()`.
 - **Resilient HTML Test Assertions:** Prefer targeted badge/element assertions over blanket negative substring checks (`"moderate" not in html`), and strip `<details class="info-tip...">...</details>` before matching stat-card labels.
+- **Python 3.15 Native Build Fallbacks (`google-re2`):** If `pip install -e ".[dev]"` fails solely on a native extension lacking a Python 3.15 wheel (e.g. `google-re2` when `regex` is the documented fallback), install the repo with `--no-deps -e .` and install all remaining dependencies via `tomllib`.
+- **Contract Test Isolation & DCO Sign-Off:** Extend stub tool registries locally with `mock.patch.object(ac, "TOOLS", ...)` instead of mutating shared contract fixtures, and check `CONTRIBUTING.md` for DCO requirements (`git commit -s`).
 
 ---
 
