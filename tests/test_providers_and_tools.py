@@ -104,6 +104,8 @@ def test_gemini_interactions_provider_and_redaction(monkeypatch):
     assert captured["headers"] == {"x-goog-api-key": "secret-test-key"}
     assert captured["payload"]["model"] == "gemini-3.8-flash"
     assert captured["payload"]["system_instruction"] == "You are an engineer."
+    assert captured["payload"]["generation_config"]["thinking_level"] == "medium"
+    assert captured["payload"]["generation_config"]["max_output_tokens"] == 4096
     assert _redact_url("https://example.com?key=abc123&foo=bar") == "https://example.com?key=***&foo=bar"
 
 

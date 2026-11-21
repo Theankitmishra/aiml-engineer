@@ -150,7 +150,11 @@ class GeminiProvider(BaseProvider):
         body: dict[str, Any] = {
             "model": self.config.model,
             "input": turns,
-            "generation_config": {"temperature": self.config.temperature},
+            "generation_config": {
+                "temperature": self.config.temperature,
+                "thinking_level": "medium",
+                "max_output_tokens": 4096,
+            },
         }
         if system_parts:
             body["system_instruction"] = "\n\n".join(system_parts)
