@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import urllib.error
+
 import pytest
 
 from aiml_engineer.config import AgentConfig
@@ -9,6 +11,7 @@ from aiml_engineer.providers import (
     GeminiProvider,
     MockProvider,
     OpenAICompatibleProvider,
+    _discover_chat_models,
     _post_json,
     _redact_url,
     build_provider,
@@ -45,6 +48,15 @@ def test_build_provider_variants():
     assert isinstance(build_provider(AgentConfig(provider="mock")), MockProvider)
     with pytest.raises(ValueError, match="Unsupported provider"):
         build_provider(AgentConfig(provider="unknown"))
+
+
+def test_discover_chat_models_returns_empty_on_connection_error(monkeypatch):
+    def fake_get(*_args, **_kwargs):
+        raise urllib.error.URLError("models endpoint unavailable")
+
+    monkeypatch.setattr("aiml_engineer.providers._get_json", fake_get)
+
+    assert _discover_chat_models("https://example.com/v1", {}, "llama") == []
 
 
 def test_repo_toolkit_sandbox_and_file_ops(tmp_path):

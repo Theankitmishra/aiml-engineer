@@ -229,7 +229,14 @@ _PREFERRED_MODEL_HINTS = ("gpt-oss-120b", "qwen", "llama-3.3-70b", "llama-4", "d
 def _discover_chat_models(base: str, headers: dict[str, str], exclude: str) -> list[str]:
     try:
         payload = _get_json(f"{base}/models", headers=headers)
-    except Exception:
+    except (
+        urllib.error.URLError,
+        TimeoutError,
+        http.client.HTTPException,
+        ConnectionError,
+        json.JSONDecodeError,
+        UnicodeDecodeError,
+    ):
         return []
     raw_ids = [
         str(item.get("id", ""))
