@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import random
 import re
 import subprocess
 import sys
@@ -70,11 +71,20 @@ def _redact_url(url: str) -> str:
     return re.sub(r"([?&]key=)[^&]+", r"\1***", url)
 
 
+def _retry_delay(attempt: int, retry_after: str | None = None) -> float:
+    if retry_after:
+        try:
+            return min(max(float(retry_after), 0.0), 60.0)
+        except ValueError:
+            pass
+    return min(2 ** (attempt + 1), 30) + random.uniform(0.0, 1.5)
+
+
 def _post_json(
     url: str,
     payload: dict[str, Any],
     headers: dict[str, str],
-    max_retries: int = 3,
+    max_retries: int = 5,
     timeout: int = 180,
 ) -> dict[str, Any]:
     data = json.dumps(payload).encode("utf-8")
@@ -93,12 +103,13 @@ def _post_json(
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
             if exc.code in transient_codes and attempt < max_retries:
-                time.sleep(min(2**attempt, 8))
+                retry_after = exc.headers.get("Retry-After") if exc.headers else None
+                time.sleep(_retry_delay(attempt, retry_after))
                 continue
             raise RuntimeError(f"HTTP {exc.code} from {safe_url}: {body[:400]}") from exc
         except (urllib.error.URLError, TimeoutError, http.client.HTTPException, ConnectionError) as exc:
             if attempt < max_retries:
-                time.sleep(min(2**attempt, 8))
+                time.sleep(_retry_delay(attempt))
                 continue
             reason = getattr(exc, "reason", exc)
             raise RuntimeError(f"Connection error to {safe_url}: {reason}") from exc

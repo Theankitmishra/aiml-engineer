@@ -132,3 +132,39 @@ def test_post_json_retries_on_timeout(monkeypatch):
     result = _post_json("https://example.com?key=secret", {"a": 1}, {}, max_retries=3)
     assert result == {"ok": True}
     assert attempts["count"] == 3
+
+
+def test_post_json_retries_on_http_503(monkeypatch):
+    import io
+    import urllib.error
+
+    attempts = {"count": 0}
+
+    class _FakeResp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return b'{"recovered": true}'
+
+    def fake_urlopen(req, timeout=0):
+        attempts["count"] += 1
+        if attempts["count"] < 4:
+            raise urllib.error.HTTPError(
+                req.full_url,
+                503,
+                "Service Unavailable",
+                hdrs={},
+                fp=io.BytesIO(b'{"error":"high demand"}'),
+            )
+        return _FakeResp()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("time.sleep", lambda _s: None)
+
+    result = _post_json("https://example.com?key=secret", {"a": 1}, {}, max_retries=5)
+    assert result == {"recovered": True}
+    assert attempts["count"] == 4
