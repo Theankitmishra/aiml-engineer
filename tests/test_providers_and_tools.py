@@ -8,6 +8,7 @@ from aiml_engineer.config import AgentConfig
 from aiml_engineer.providers import (
     GeminiProvider,
     MockProvider,
+    _post_json,
     _redact_url,
     build_provider,
     parse_action_response,
@@ -104,3 +105,30 @@ def test_gemini_interactions_provider_and_redaction(monkeypatch):
     assert captured["payload"]["model"] == "gemini-3.8-flash"
     assert captured["payload"]["system_instruction"] == "You are an engineer."
     assert _redact_url("https://example.com?key=abc123&foo=bar") == "https://example.com?key=***&foo=bar"
+
+
+def test_post_json_retries_on_timeout(monkeypatch):
+    attempts = {"count": 0}
+
+    class _FakeResp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return b'{"ok": true}'
+
+    def fake_urlopen(req, timeout=0):
+        attempts["count"] += 1
+        if attempts["count"] < 3:
+            raise TimeoutError("The read operation timed out")
+        return _FakeResp()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("time.sleep", lambda _s: None)
+
+    result = _post_json("https://example.com?key=secret", {"a": 1}, {}, max_retries=3)
+    assert result == {"ok": True}
+    assert attempts["count"] == 3

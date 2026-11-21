@@ -94,6 +94,7 @@ jobs:
           git add drafts/ PLAYBOOK.md runs_log.jsonl trajectories/ eval/ training_data/
           if ! git diff --cached --quiet; then
             git commit -m "chore: record daily aiml-engineer run"
+            git pull --rebase --autostash
             git push
           else
             echo "No workspace updates to commit."

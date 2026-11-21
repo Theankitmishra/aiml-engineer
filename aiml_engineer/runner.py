@@ -249,7 +249,7 @@ def run_issue_loop(
 
         try:
             action = parse_action_response(raw_reply)
-        except ValueError as exc:
+        except (ValueError, TypeError) as exc:
             messages.append({"role": "user", "content": f"Invalid action format: {exc}"})
             continue
 

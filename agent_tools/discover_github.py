@@ -11,6 +11,7 @@ import argparse
 import json
 import os
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -152,9 +153,11 @@ def search_candidate_issues(
     max_repo_lookups = 40 if token else 12
     repo_lookups = 0
 
-    for raw_query in ISSUE_QUERIES:
+    for idx, raw_query in enumerate(ISSUE_QUERIES):
         if len(candidates) >= limit * 2 or repo_lookups >= max_repo_lookups:
             break
+        if idx > 0:
+            time.sleep(1.5)
         encoded = urllib.parse.urlencode(
             {"q": raw_query, "sort": "updated", "order": "desc", "per_page": per_page}
         )

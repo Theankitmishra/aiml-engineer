@@ -7,6 +7,7 @@ any teacher model can directly train and evaluate smaller student models.
 
 from __future__ import annotations
 
+import http.client
 import json
 import re
 import subprocess
@@ -74,6 +75,7 @@ def _post_json(
     payload: dict[str, Any],
     headers: dict[str, str],
     max_retries: int = 3,
+    timeout: int = 180,
 ) -> dict[str, Any]:
     data = json.dumps(payload).encode("utf-8")
     transient_codes = {429, 500, 502, 503, 504}
@@ -86,7 +88,7 @@ def _post_json(
             method="POST",
         )
         try:
-            with urllib.request.urlopen(req, timeout=120) as resp:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
                 return json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
@@ -94,11 +96,12 @@ def _post_json(
                 time.sleep(min(2**attempt, 8))
                 continue
             raise RuntimeError(f"HTTP {exc.code} from {safe_url}: {body[:400]}") from exc
-        except urllib.error.URLError as exc:
+        except (urllib.error.URLError, TimeoutError, http.client.HTTPException, ConnectionError) as exc:
             if attempt < max_retries:
                 time.sleep(min(2**attempt, 8))
                 continue
-            raise RuntimeError(f"Connection error to {safe_url}: {exc.reason}") from exc
+            reason = getattr(exc, "reason", exc)
+            raise RuntimeError(f"Connection error to {safe_url}: {reason}") from exc
     raise RuntimeError(f"Exhausted retries for {safe_url}")
 
 
