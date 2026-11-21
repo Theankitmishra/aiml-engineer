@@ -8,6 +8,7 @@ from aiml_engineer.config import AgentConfig
 from aiml_engineer.providers import (
     GeminiProvider,
     MockProvider,
+    OpenAICompatibleProvider,
     _post_json,
     _redact_url,
     build_provider,
@@ -197,3 +198,32 @@ def test_gemini_falls_back_on_transient_timeout(monkeypatch):
     out = GeminiProvider(cfg).complete([{"role": "user", "content": "Check status."}])
     assert '"tool":"git_status"' in out
     assert seen_models == ["gemini-3.8-flash", "gemini-3.7-flash"]
+
+
+def test_openai_compatible_discovers_model_on_404(monkeypatch):
+    seen_models: list[str] = []
+
+    def fake_post(url, payload, headers, **_kwargs):
+        seen_models.append(payload["model"])
+        if payload["model"] == "llama-3.3-70b-versatile":
+            raise RuntimeError(f"HTTP 404 from {url}: model_not_found")
+        return {"choices": [{"message": {"content": '{"thought":"ok","tool":"git_status","args":{}}'}}]}
+
+    def fake_get(url, headers, **_kwargs):
+        return {
+            "data": [
+                {"id": "whisper-large-v3"},
+                {"id": "llama-3.1-8b-instant"},
+                {"id": "openai/gpt-oss-120b"},
+            ]
+        }
+
+    monkeypatch.setattr("aiml_engineer.providers._post_json", fake_post)
+    monkeypatch.setattr("aiml_engineer.providers._get_json", fake_get)
+
+    cfg = AgentConfig(provider="groq", api_key="groq-test-key")
+    prov = OpenAICompatibleProvider(cfg)
+    out = prov.complete([{"role": "user", "content": "Check status."}])
+    assert '"tool":"git_status"' in out
+    assert seen_models == ["llama-3.3-70b-versatile", "openai/gpt-oss-120b"]
+    assert cfg.model == "openai/gpt-oss-120b"

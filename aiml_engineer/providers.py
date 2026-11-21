@@ -208,6 +208,50 @@ class GeminiProvider(BaseProvider):
         raise RuntimeError(f"Gemini Interactions API returned no text output: {resp}")
 
 
+def _get_json(
+    url: str,
+    headers: dict[str, str],
+    timeout: int = 30,
+) -> dict[str, Any]:
+    req = urllib.request.Request(
+        url,
+        headers={"Accept": "application/json", "User-Agent": "aiml-engineer/0.1", **headers},
+        method="GET",
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+_NON_CHAT_MODEL_HINTS = ("whisper", "tts", "orpheus", "guard", "safeguard", "embed", "rerank")
+_PREFERRED_MODEL_HINTS = ("gpt-oss-120b", "qwen", "llama-3.3-70b", "llama-4", "deepseek", "gpt-oss-20b", "llama-3.1-8b")
+
+
+def _discover_chat_models(base: str, headers: dict[str, str], exclude: str) -> list[str]:
+    try:
+        payload = _get_json(f"{base}/models", headers=headers)
+    except Exception:
+        return []
+    raw_ids = [
+        str(item.get("id", ""))
+        for item in (payload.get("data") or [])
+        if isinstance(item, dict) and item.get("id")
+    ]
+    candidates = [
+        mid
+        for mid in raw_ids
+        if mid != exclude and not any(h in mid.lower() for h in _NON_CHAT_MODEL_HINTS)
+    ]
+
+    def _rank(mid: str) -> tuple[int, str]:
+        low = mid.lower()
+        for idx, hint in enumerate(_PREFERRED_MODEL_HINTS):
+            if hint in low:
+                return (idx, mid)
+        return (len(_PREFERRED_MODEL_HINTS), mid)
+
+    return sorted(candidates, key=_rank)
+
+
 class OpenAICompatibleProvider(BaseProvider):
     """Adapter for OpenAI, Groq, Hugging Face Router, OpenRouter, Together, vLLM, or LM Studio."""
 
@@ -217,14 +261,37 @@ class OpenAICompatibleProvider(BaseProvider):
         if self.config.api_key:
             headers["Authorization"] = f"Bearer {self.config.api_key}"
 
-        body: dict[str, Any] = {
-            "model": self.config.model,
-            "messages": messages,
-            "temperature": self.config.temperature,
-        }
-        if self.config.provider in ("openai", "groq"):
-            body["response_format"] = {"type": "json_object"}
-        resp = _post_json(f"{base}/chat/completions", body, headers=headers)
+        def _call(model_name: str) -> dict[str, Any]:
+            body: dict[str, Any] = {
+                "model": model_name,
+                "messages": messages,
+                "temperature": self.config.temperature,
+            }
+            if self.config.provider in ("openai", "groq"):
+                body["response_format"] = {"type": "json_object"}
+            return _post_json(f"{base}/chat/completions", body, headers=headers)
+
+        try:
+            resp = _call(self.config.model)
+        except RuntimeError as exc:
+            err_lower = str(exc).lower()
+            if "http 404" not in err_lower and "model_not_found" not in err_lower:
+                raise
+            discovered = _discover_chat_models(base, headers, exclude=self.config.model)
+            if not discovered:
+                raise
+            resp = None
+            last_exc: RuntimeError = exc
+            for candidate in discovered[:3]:
+                try:
+                    resp = _call(candidate)
+                    self.config.model = candidate
+                    break
+                except RuntimeError as inner_exc:
+                    last_exc = inner_exc
+            if resp is None:
+                raise last_exc
+
         choices = resp.get("choices") or []
         if not choices:
             raise RuntimeError(f"OpenAI-compatible endpoint returned no choices: {resp}")
