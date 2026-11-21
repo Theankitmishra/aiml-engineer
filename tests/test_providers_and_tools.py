@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import pytest
 import urllib.error
+
+import pytest
 
 from aiml_engineer.config import AgentConfig
 from aiml_engineer.providers import (
