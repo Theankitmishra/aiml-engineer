@@ -37,6 +37,7 @@ class AgentConfig:
     temperature: float = 0.1
     top_k_examples: int = 2
     dry_run: bool = False
+    auto_pr: bool = False
 
     def __post_init__(self) -> None:
         self.workspace_dir = Path(self.workspace_dir).resolve()

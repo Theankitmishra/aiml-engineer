@@ -258,3 +258,40 @@ def test_record_teacher_and_shadow_compare_dpo_capture(tmp_path):
     assert report["dpo_pair_captured"] is True
     assert report["dataset_summary"]["dpo_pairs"] == 1
     assert (ws / "eval" / "comparisons" / "org__minicalc__issue_1.md").exists()
+
+
+def test_submit_fork_pr_flow(tmp_path, monkeypatch):
+    from aiml_engineer.runner import _submit_fork_pr
+
+    calls: list[list[str]] = []
+
+    class _Proc:
+        def __init__(self, returncode: int = 0, stdout: str = "") -> None:
+            self.returncode = returncode
+            self.stdout = stdout
+            self.stderr = ""
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        if cmd[:3] == ["gh", "api", "user"]:
+            return _Proc(0, "Theankitmishra\n")
+        if cmd[:3] == ["gh", "pr", "list"]:
+            return _Proc(0, "")
+        if cmd[:3] == ["gh", "pr", "create"]:
+            return _Proc(0, "https://github.com/org/minicalc/pull/42\n")
+        return _Proc(0, "")
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    draft = tmp_path / "draft.md"
+    draft.write_text("# PR", encoding="utf-8")
+    url = _submit_fork_pr(
+        repo_dir=tmp_path,
+        issue={"repo": "org/minicalc", "issue_number": 1, "issue_title": "fix multiply"},
+        branch_name="fix/issue-1",
+        draft_path=draft,
+        github_token="ghp_testtoken",
+    )
+    assert url == "https://github.com/org/minicalc/pull/42"
+    assert any(c[:3] == ["gh", "repo", "fork"] for c in calls)
+    assert any(c[:2] == ["git", "push"] for c in calls)
+    assert any(c[:3] == ["gh", "pr", "create"] for c in calls)

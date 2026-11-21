@@ -28,6 +28,7 @@ def _build_config(args: argparse.Namespace) -> AgentConfig:
         base_url=getattr(args, "base_url", None),
         max_steps=getattr(args, "max_steps", 20),
         dry_run=getattr(args, "dry_run", False),
+        auto_pr=getattr(args, "auto_pr", False),
     )
 
 
@@ -299,6 +300,7 @@ def main(argv: list[str] | None = None) -> int:
     p_run.add_argument("--title", default="")
     p_run.add_argument("--body", default="")
     p_run.add_argument("--dry-run", action="store_true")
+    p_run.add_argument("--auto-pr", action="store_true", help="Fork, push branch, and open a PR automatically when verified.")
     p_run.set_defaults(func=cmd_run)
 
     p_exp = sub.add_parser("export-data", help="Export verified SFT & DPO datasets from trajectories/.")

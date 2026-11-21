@@ -83,7 +83,8 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_PR_TOKEN: ${{ secrets.GH_PR_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GH_PR_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           set +e
           PROVIDER="${{ steps.resolve_provider.outputs.provider }}"
@@ -95,6 +96,9 @@ jobs:
           fi
           if [ -n "$ISSUE" ]; then
             CMD+=(--issue "$ISSUE")
+          fi
+          if [ -n "$GH_PR_TOKEN" ]; then
+            CMD+=(--auto-pr)
           fi
           "${CMD[@]}" 2>&1 | tee /tmp/agent_run.log
           RUN_EXIT=${PIPESTATUS[0]}

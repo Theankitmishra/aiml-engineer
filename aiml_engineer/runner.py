@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -202,6 +203,84 @@ def _append_playbook_lessons(playbook_path: Path, issue_key: str, lessons: list[
     playbook_path.write_text(updated, encoding="utf-8")
 
 
+def _submit_fork_pr(
+    repo_dir: Path,
+    issue: dict[str, Any],
+    branch_name: str,
+    draft_path: Path,
+    github_token: str,
+) -> str | None:
+    """Fork target repo, push branch, and open a PR using the provided PAT."""
+    env = {**os.environ, "GH_TOKEN": github_token, "GITHUB_TOKEN": github_token}
+    login_proc = subprocess.run(
+        ["gh", "api", "user", "-q", ".login"],
+        cwd=repo_dir,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    login = login_proc.stdout.strip()
+    if login_proc.returncode != 0 or not login:
+        return None
+
+    subprocess.run(
+        ["gh", "repo", "fork", issue["repo"], "--clone=false", "--remote=false"],
+        cwd=repo_dir,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    repo_name = issue["repo"].split("/")[-1]
+    fork_url = f"https://x-access-token:{github_token}@github.com/{login}/{repo_name}.git"
+    push_proc = subprocess.run(
+        ["git", "push", "-u", fork_url, f"HEAD:{branch_name}"],
+        cwd=repo_dir,
+        env={**env, "GIT_TERMINAL_PROMPT": "0"},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if push_proc.returncode != 0:
+        return None
+
+    existing = subprocess.run(
+        ["gh", "pr", "list", "--repo", issue["repo"], "--head", f"{login}:{branch_name}", "--json", "url", "-q", ".[0].url"],
+        cwd=repo_dir,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if existing.returncode == 0 and existing.stdout.strip():
+        return existing.stdout.strip()
+
+    pr_proc = subprocess.run(
+        [
+            "gh",
+            "pr",
+            "create",
+            "--repo",
+            issue["repo"],
+            "--head",
+            f"{login}:{branch_name}",
+            "--title",
+            f"Fix #{issue['issue_number']}: {issue['issue_title'][:72]}",
+            "--body-file",
+            str(draft_path),
+        ],
+        cwd=repo_dir,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if pr_proc.returncode == 0:
+        return pr_proc.stdout.strip().splitlines()[-1]
+    return None
+
+
 def run_issue_loop(
     config: AgentConfig,
     issue: dict[str, Any],
@@ -382,13 +461,14 @@ def run_issue_loop(
 
     patch_diff = toolkit.git_diff().output
     fix_commit = resolved_base
+    pr_url: str | None = None
     lessons = list(finish_payload.get("lessons_learned") or [])
     if verification_passed and patch_diff and patch_diff != "(no diff)" and not config.dry_run:
         fix_commit = _commit_changes(
             repo_dir,
             f"Fix {issue['repo']}#{issue['issue_number']}: {issue['issue_title'][:60]}",
         )
-        _write_pr_draft(
+        draft_path = _write_pr_draft(
             drafts_dir=config.drafts_dir,
             issue=issue,
             repo_dir=repo_dir,
@@ -398,6 +478,14 @@ def run_issue_loop(
             root_cause=str(finish_payload.get("root_cause", "")),
             test_output=last_test_output,
         )
+        if config.auto_pr and config.github_token:
+            pr_url = _submit_fork_pr(
+                repo_dir=repo_dir,
+                issue=issue,
+                branch_name=branch_name,
+                draft_path=draft_path,
+                github_token=config.github_token,
+            )
 
     record = TrajectoryRecord(
         issue_key=issue["issue_key"],
@@ -425,11 +513,13 @@ def run_issue_loop(
             "date": datetime.now(timezone.utc).isoformat(),
             "issue_key": record.issue_key,
             "issue_url": record.issue_url,
-            "status": "pr_draft_ready" if verification_passed else "failed",
+            "status": "pr_opened" if pr_url else ("pr_draft_ready" if verification_passed else "failed"),
             "root_cause": str(finish_payload.get("root_cause", "")),
             "verification_passed": verification_passed,
             "lessons_learned": lessons,
         }
+        if pr_url:
+            log_entry["pr_url"] = pr_url
         with config.runs_log_path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(log_entry) + "\n")
         if lessons:
