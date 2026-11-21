@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import pytest
+import urllib.error
 
 from aiml_engineer.config import AgentConfig
 from aiml_engineer.providers import (
     GeminiProvider,
     MockProvider,
     OpenAICompatibleProvider,
+    _discover_chat_models,
     _post_json,
     _redact_url,
     build_provider,
@@ -110,6 +112,22 @@ def test_gemini_interactions_provider_and_redaction(monkeypatch):
     assert captured["payload"]["generation_config"]["thinking_level"] == "medium"
     assert captured["payload"]["generation_config"]["max_output_tokens"] == 4096
     assert _redact_url("https://example.com?key=abc123&foo=bar") == "https://example.com?key=***&foo=bar"
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        urllib.error.URLError("offline"),
+        TimeoutError("timed out"),
+    ],
+)
+def test_discover_chat_models_returns_empty_on_request_failure(monkeypatch, error):
+    def fake_get_json(*_args, **_kwargs):
+        raise error
+
+    monkeypatch.setattr("aiml_engineer.providers._get_json", fake_get_json)
+
+    assert _discover_chat_models("https://example.com/v1", {}, "excluded") == []
 
 
 def test_post_json_retries_on_timeout(monkeypatch):
