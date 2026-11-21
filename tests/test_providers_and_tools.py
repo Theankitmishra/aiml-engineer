@@ -76,7 +76,7 @@ def test_repo_toolkit_sandbox_and_file_ops(tmp_path):
 def test_gemini_interactions_provider_and_redaction(monkeypatch):
     captured: dict[str, object] = {}
 
-    def fake_post(url, payload, headers):
+    def fake_post(url, payload, headers, **_kwargs):
         captured["url"] = url
         captured["payload"] = payload
         captured["headers"] = headers
@@ -170,3 +170,28 @@ def test_post_json_retries_on_http_503(monkeypatch):
     result = _post_json("https://example.com?key=secret", {"a": 1}, {}, max_retries=5)
     assert result == {"recovered": True}
     assert attempts["count"] == 4
+
+
+def test_gemini_falls_back_on_transient_timeout(monkeypatch):
+    seen_models: list[str] = []
+
+    def fake_post(url, payload, headers, **_kwargs):
+        seen_models.append(payload["model"])
+        if payload["model"] == "gemini-3.8-flash":
+            raise RuntimeError(
+                "Connection error to https://generativelanguage.googleapis.com/v1/interactions: The read operation timed out"
+            )
+        return {
+            "steps": [
+                {
+                    "type": "model_output",
+                    "content": [{"type": "text", "text": '{"thought":"ok","tool":"git_status","args":{}}'}],
+                }
+            ]
+        }
+
+    monkeypatch.setattr("aiml_engineer.providers._post_json", fake_post)
+    cfg = AgentConfig(provider="gemini", api_key="secret-test-key")
+    out = GeminiProvider(cfg).complete([{"role": "user", "content": "Check status."}])
+    assert '"tool":"git_status"' in out
+    assert seen_models == ["gemini-3.8-flash", "gemini-3.7-flash"]

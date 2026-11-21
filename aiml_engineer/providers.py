@@ -131,6 +131,7 @@ class GeminiProvider(BaseProvider):
     """Google Gemini Interactions REST API adapter (no external SDK required)."""
 
     INTERACTIONS_URL = "https://generativelanguage.googleapis.com/v1/interactions"
+    FALLBACK_MODELS = ("gemini-3.7-flash", "gemini-flash-latest")
 
     def complete(self, messages: list[dict[str, str]]) -> str:
         if not self.config.api_key:
@@ -147,23 +148,48 @@ class GeminiProvider(BaseProvider):
                 step_type = "model_output" if role == "assistant" else "user_input"
                 turns.append({"type": step_type, "content": [{"type": "text", "text": text}]})
 
-        body: dict[str, Any] = {
-            "model": self.config.model,
-            "input": turns,
-            "generation_config": {
-                "temperature": self.config.temperature,
-                "thinking_level": "medium",
-                "max_output_tokens": 4096,
-            },
-        }
-        if system_parts:
-            body["system_instruction"] = "\n\n".join(system_parts)
+        candidate_models = [self.config.model]
+        if self.config.model == "gemini-3.8-flash":
+            for fb in self.FALLBACK_MODELS:
+                if fb not in candidate_models:
+                    candidate_models.append(fb)
 
-        resp = _post_json(
-            self.INTERACTIONS_URL,
-            body,
-            headers={"x-goog-api-key": self.config.api_key},
-        )
+        last_exc: RuntimeError | None = None
+        resp: dict[str, Any] | None = None
+        for model_name in candidate_models:
+            body: dict[str, Any] = {
+                "model": model_name,
+                "input": turns,
+                "generation_config": {
+                    "temperature": self.config.temperature,
+                    "thinking_level": "medium",
+                    "max_output_tokens": 4096,
+                },
+            }
+            if system_parts:
+                body["system_instruction"] = "\n\n".join(system_parts)
+
+            try:
+                resp = _post_json(
+                    self.INTERACTIONS_URL,
+                    body,
+                    headers={"x-goog-api-key": self.config.api_key},
+                    max_retries=2,
+                    timeout=60,
+                )
+                break
+            except RuntimeError as exc:
+                last_exc = exc
+                msg_lower = str(exc).lower()
+                is_transient = any(
+                    marker in msg_lower
+                    for marker in ("timed out", "http 429", "http 500", "http 502", "http 503", "http 504")
+                )
+                if not is_transient:
+                    raise
+        if resp is None:
+            assert last_exc is not None
+            raise last_exc
         texts: list[str] = []
         for step in resp.get("steps") or []:
             if step.get("type") == "model_output":
