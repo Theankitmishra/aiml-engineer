@@ -10,10 +10,21 @@ on:
         description: "Optional target issue (owner/repo#number). Leave blank for auto-discovery."
         required: false
         default: ""
-      model:
-        description: "Gemini model name"
+      provider:
+        description: "LLM provider (auto picks GROQ_API_KEY > HF_TOKEN > OPENAI_API_KEY > GEMINI_API_KEY)"
         required: false
-        default: "gemini-3.8-flash"
+        default: "auto"
+        type: choice
+        options:
+          - auto
+          - groq
+          - huggingface
+          - gemini
+          - openai
+      model:
+        description: "Optional model override (leave blank for provider default)"
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -37,29 +48,55 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
 
-      - name: Verify GEMINI_API_KEY secret
+      - name: Resolve provider and verify API key secret
+        id: resolve_provider
         env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
-          if [ -z "$GEMINI_API_KEY" ]; then
-            echo "::error::GEMINI_API_KEY secret is not set. Add it under Settings -> Secrets and variables -> Actions."
-            exit 1
+          REQUESTED="${{ inputs.provider || 'auto' }}"
+          if [ "$REQUESTED" = "auto" ]; then
+            if [ -n "$GROQ_API_KEY" ]; then
+              PROVIDER="groq"
+            elif [ -n "$HF_TOKEN" ]; then
+              PROVIDER="huggingface"
+            elif [ -n "$OPENAI_API_KEY" ]; then
+              PROVIDER="openai"
+            elif [ -n "$GEMINI_API_KEY" ]; then
+              PROVIDER="gemini"
+            else
+              echo "::error::No LLM API key secret found. Add GROQ_API_KEY (recommended free), HF_TOKEN, OPENAI_API_KEY, or GEMINI_API_KEY under Settings -> Secrets and variables -> Actions."
+              exit 1
+            fi
+          else
+            PROVIDER="$REQUESTED"
           fi
+          echo "provider=$PROVIDER" >> "$GITHUB_OUTPUT"
+          echo "Using provider: $PROVIDER"
 
       - name: Run autonomous AI/ML engineer
         id: agent_run
         env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set +e
-          MODEL="${{ inputs.model || 'gemini-3.8-flash' }}"
+          PROVIDER="${{ steps.resolve_provider.outputs.provider }}"
+          MODEL="${{ inputs.model }}"
           ISSUE="${{ inputs.issue }}"
-          if [ -n "$ISSUE" ]; then
-            aiml-engineer run --provider gemini --model "$MODEL" --issue "$ISSUE" 2>&1 | tee /tmp/agent_run.log
-          else
-            aiml-engineer run --provider gemini --model "$MODEL" 2>&1 | tee /tmp/agent_run.log
+          CMD=(aiml-engineer run --provider "$PROVIDER")
+          if [ -n "$MODEL" ]; then
+            CMD+=(--model "$MODEL")
           fi
+          if [ -n "$ISSUE" ]; then
+            CMD+=(--issue "$ISSUE")
+          fi
+          "${CMD[@]}" 2>&1 | tee /tmp/agent_run.log
           RUN_EXIT=${PIPESTATUS[0]}
           echo "exit_code=$RUN_EXIT" >> "$GITHUB_OUTPUT"
           if [ "$RUN_EXIT" -ne 0 ]; then

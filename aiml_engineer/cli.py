@@ -277,9 +277,11 @@ def main(argv: list[str] | None = None) -> int:
     p_rec.add_argument("--lesson", action="append", default=[])
     p_rec.set_defaults(func=cmd_record_teacher)
 
+    PROVIDER_CHOICES = ["gemini", "groq", "huggingface", "openai", "ollama", "mlx", "mock"]
+
     p_cmp = sub.add_parser("shadow-compare", help="Replay a teacher-solved issue on aiml-engineer and compare.")
     p_cmp.add_argument("--issue", default=None, help="owner/repo#number (defaults to latest teacher trajectory)")
-    p_cmp.add_argument("--provider", default="gemini", choices=["gemini", "openai", "ollama", "mlx", "mock"])
+    p_cmp.add_argument("--provider", default="gemini", choices=PROVIDER_CHOICES)
     p_cmp.add_argument("--model", default="")
     p_cmp.add_argument("--base-url", default=None)
     p_cmp.add_argument("--adapter-path", default=None)
@@ -289,7 +291,7 @@ def main(argv: list[str] | None = None) -> int:
     p_cmp.set_defaults(func=cmd_shadow_compare)
 
     p_run = sub.add_parser("run", help="Discover and solve an AI/ML Python GitHub issue.")
-    p_run.add_argument("--provider", default="gemini", choices=["gemini", "openai", "ollama", "mlx", "mock"])
+    p_run.add_argument("--provider", default="gemini", choices=PROVIDER_CHOICES)
     p_run.add_argument("--model", default="")
     p_run.add_argument("--base-url", default=None)
     p_run.add_argument("--max-steps", type=int, default=20)
@@ -304,7 +306,7 @@ def main(argv: list[str] | None = None) -> int:
     p_exp.set_defaults(func=cmd_export_data)
 
     p_eval = sub.add_parser("eval", help="Evaluate a provider/model/adapter against eval/tasks.jsonl.")
-    p_eval.add_argument("--provider", default="gemini", choices=["gemini", "openai", "ollama", "mlx", "mock"])
+    p_eval.add_argument("--provider", default="gemini", choices=PROVIDER_CHOICES)
     p_eval.add_argument("--model", default="")
     p_eval.add_argument("--base-url", default=None)
     p_eval.add_argument("--adapter-path", default=None)

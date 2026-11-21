@@ -10,6 +10,8 @@ from typing import Any
 
 DEFAULT_MODELS = {
     "gemini": "gemini-3.8-flash",
+    "groq": "llama-3.3-70b-versatile",
+    "huggingface": "Qwen/Qwen2.5-Coder-32B-Instruct",
     "openai": "gpt-4o-mini",
     "ollama": "qwen2.5-coder:14b",
     "mlx": "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit",
@@ -44,12 +46,20 @@ class AgentConfig:
         if not self.api_key:
             if self.provider == "gemini":
                 self.api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+            elif self.provider == "groq":
+                self.api_key = os.environ.get("GROQ_API_KEY")
+            elif self.provider == "huggingface":
+                self.api_key = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_API_KEY")
             elif self.provider == "openai":
                 self.api_key = os.environ.get("OPENAI_API_KEY")
         if not self.github_token:
             self.github_token = os.environ.get("GITHUB_TOKEN") or None
         if not self.base_url:
-            if self.provider == "ollama":
+            if self.provider == "groq":
+                self.base_url = os.environ.get("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
+            elif self.provider == "huggingface":
+                self.base_url = os.environ.get("HF_BASE_URL", "https://router.huggingface.co/v1")
+            elif self.provider == "ollama":
                 self.base_url = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
             elif self.provider == "openai":
                 self.base_url = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")

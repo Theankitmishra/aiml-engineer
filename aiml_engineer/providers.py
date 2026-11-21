@@ -94,7 +94,7 @@ def _post_json(
         req = urllib.request.Request(
             url,
             data=data,
-            headers={"Content-Type": "application/json", **headers},
+            headers={"Content-Type": "application/json", "User-Agent": "aiml-engineer/0.1", **headers},
             method="POST",
         )
         try:
@@ -131,7 +131,7 @@ class GeminiProvider(BaseProvider):
     """Google Gemini Interactions REST API adapter (no external SDK required)."""
 
     INTERACTIONS_URL = "https://generativelanguage.googleapis.com/v1/interactions"
-    FALLBACK_MODELS = ("gemini-3.7-flash", "gemini-flash-latest")
+    FALLBACK_MODELS = ("gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash")
 
     def complete(self, messages: list[dict[str, str]]) -> str:
         if not self.config.api_key:
@@ -209,7 +209,7 @@ class GeminiProvider(BaseProvider):
 
 
 class OpenAICompatibleProvider(BaseProvider):
-    """Adapter for OpenAI, OpenRouter, Together, vLLM, or LM Studio endpoints."""
+    """Adapter for OpenAI, Groq, Hugging Face Router, OpenRouter, Together, vLLM, or LM Studio."""
 
     def complete(self, messages: list[dict[str, str]]) -> str:
         base = (self.config.base_url or "https://api.openai.com/v1").rstrip("/")
@@ -221,8 +221,9 @@ class OpenAICompatibleProvider(BaseProvider):
             "model": self.config.model,
             "messages": messages,
             "temperature": self.config.temperature,
-            "response_format": {"type": "json_object"},
         }
+        if self.config.provider in ("openai", "groq"):
+            body["response_format"] = {"type": "json_object"}
         resp = _post_json(f"{base}/chat/completions", body, headers=headers)
         choices = resp.get("choices") or []
         if not choices:
@@ -315,7 +316,7 @@ def build_provider(config: AgentConfig, adapter_path: str | None = None) -> Base
     """Instantiate the configured LLM provider."""
     if config.provider == "gemini":
         return GeminiProvider(config)
-    if config.provider == "openai":
+    if config.provider in ("openai", "groq", "huggingface"):
         return OpenAICompatibleProvider(config)
     if config.provider == "ollama":
         return OllamaProvider(config)

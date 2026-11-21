@@ -36,9 +36,11 @@ def test_parse_action_response_rejects_invalid():
 
 
 def test_build_provider_variants():
-    for name in ("gemini", "openai", "ollama", "mlx", "mock"):
+    for name in ("gemini", "groq", "huggingface", "openai", "ollama", "mlx", "mock"):
         prov = build_provider(AgentConfig(provider=name))
         assert prov.config.provider == name
+    assert AgentConfig(provider="groq").base_url == "https://api.groq.com/openai/v1"
+    assert AgentConfig(provider="huggingface").base_url == "https://router.huggingface.co/v1"
     assert isinstance(build_provider(AgentConfig(provider="mock")), MockProvider)
     with pytest.raises(ValueError, match="Unsupported provider"):
         build_provider(AgentConfig(provider="unknown"))
