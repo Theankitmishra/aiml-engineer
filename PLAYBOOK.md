@@ -54,6 +54,10 @@ This file is read at the **start** of every automated run and updated at the **e
 
 ---
 
+- **[generative-computing/mellea-skills-compiler#110]** W
+- **[generative-computing/mellea-skills-compiler#110]** h
+- **[generative-computing/mellea-skills-compiler#110]** e
+
 ## 3. Run-End Retrospective Checklist (Loop Update)
 
 After each run, append one JSON line to `runs_log.jsonl` and add **1–3 concrete, reusable lessons** to Section 2 above if you discovered:
