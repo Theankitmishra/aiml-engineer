@@ -121,7 +121,12 @@ jobs:
         with:
           name: pr-drafts
           path: drafts/
+          retention-days: 7
           if-no-files-found: ignore
+
+      - name: Clean up temporary cloned repos
+        if: always()
+        run: rm -rf repos/ /tmp/agent_run.log
 
       - name: Commit updated drafts, playbook, and trajectories
         if: always()

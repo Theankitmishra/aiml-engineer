@@ -227,3 +227,33 @@ def test_openai_compatible_discovers_model_on_404(monkeypatch):
     assert '"tool":"git_status"' in out
     assert seen_models == ["llama-3.3-70b-versatile", "openai/gpt-oss-120b"]
     assert cfg.model == "openai/gpt-oss-120b"
+
+
+def test_openai_compatible_shrinks_and_recovers_on_413(monkeypatch):
+    seen_lengths: list[int] = []
+
+    def fake_post(url, payload, headers, **_kwargs):
+        total = sum(len(m["content"]) for m in payload["messages"])
+        seen_lengths.append(total)
+        if total > 7000:
+            raise RuntimeError(
+                f"HTTP 413 from {url}: Limit 7000, Requested 7017, please try again in 1.2s"
+            )
+        return {"choices": [{"message": {"content": '{"thought":"ok","tool":"git_status","args":{}}'}}]}
+
+    monkeypatch.setattr("aiml_engineer.providers._post_json", fake_post)
+    monkeypatch.setattr("aiml_engineer.providers._discover_chat_models", lambda *a, **k: [])
+    monkeypatch.setattr("time.sleep", lambda _s: None)
+
+    cfg = AgentConfig(provider="groq", api_key="groq-test-key", model="qwen/qwen3.8-27b")
+    msgs = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "task " * 1000},
+        {"role": "assistant", "content": "a" * 2000},
+        {"role": "user", "content": "u" * 2000},
+    ]
+    out = OpenAICompatibleProvider(cfg).complete(msgs)
+    assert '"tool":"git_status"' in out
+    assert len(seen_lengths) == 2
+    assert seen_lengths[0] > 7000
+    assert seen_lengths[1] < seen_lengths[0]

@@ -51,11 +51,26 @@ def _python_candidates() -> list[str]:
     return candidates
 
 
-def _trim_messages(messages: list[dict[str, str]], max_tail: int = 16) -> list[dict[str, str]]:
-    """Keep system + initial task + most recent turns so context stays bounded."""
-    if len(messages) <= max_tail + 2:
+def _trim_messages(
+    messages: list[dict[str, str]],
+    max_tail: int = 8,
+    max_chars: int = 14000,
+) -> list[dict[str, str]]:
+    """Keep system + initial task + recent turns bounded by both count and character budget."""
+    if len(messages) <= 2:
         return messages
-    return [*messages[:2], *messages[-max_tail:]]
+    head = messages[:2]
+    budget = max(max_chars - sum(len(m["content"]) for m in head), 2000)
+    tail: list[dict[str, str]] = []
+    used = 0
+    for msg in reversed(messages[2:][-max_tail:]):
+        cost = len(msg["content"])
+        if tail and used + cost > budget:
+            break
+        tail.append(msg)
+        used += cost
+    tail.reverse()
+    return [*head, *tail]
 
 
 def _git_author_configured(repo_dir: Path) -> bool:
@@ -214,7 +229,7 @@ def run_issue_loop(
 
     toolkit = RepoToolkit(repo_dir)
     playbook_text = (
-        config.playbook_path.read_text(encoding="utf-8")[:2500]
+        config.playbook_path.read_text(encoding="utf-8")[:1200]
         if config.playbook_path.exists()
         else ""
     )
@@ -244,7 +259,34 @@ def run_issue_loop(
     last_test_output = ""
 
     for _step in range(config.max_steps):
-        raw_reply = llm.complete(_trim_messages(messages))
+        trimmed = _trim_messages(messages)
+        try:
+            raw_reply = llm.complete(trimmed)
+        except RuntimeError:
+            if provider is not None:
+                raise
+            # Dynamically fail over to any other configured cloud provider
+            raw_reply = ""
+            for alt_name in ("groq", "huggingface", "openai", "gemini"):
+                if alt_name == llm.config.provider:
+                    continue
+                alt_cfg = AgentConfig(
+                    workspace_dir=config.workspace_dir,
+                    provider=alt_name,
+                    github_token=config.github_token,
+                    temperature=config.temperature,
+                )
+                if not alt_cfg.api_key:
+                    continue
+                try:
+                    alt_llm = build_provider(alt_cfg)
+                    raw_reply = alt_llm.complete(trimmed)
+                    llm = alt_llm
+                    break
+                except RuntimeError:
+                    continue
+            if not raw_reply:
+                raise
         messages.append({"role": "assistant", "content": raw_reply})
 
         try:
@@ -258,7 +300,7 @@ def run_issue_loop(
             repro_failed_before_fix = True
 
         if not result.finished:
-            messages.append({"role": "user", "content": f"Tool result ({action.tool}): {result.output}"})
+            messages.append({"role": "user", "content": f"Tool result ({action.tool}): {result.output[:2500]}"})
             continue
 
         # Independent verification gate when the agent calls finish

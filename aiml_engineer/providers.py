@@ -252,6 +252,27 @@ def _discover_chat_models(base: str, headers: dict[str, str], exclude: str) -> l
     return sorted(candidates, key=_rank)
 
 
+_TRY_AGAIN_RE = re.compile(r"try again in\s+([0-9]+(?:\.[0-9]+)?)\s*(ms|s)", re.IGNORECASE)
+
+
+def _shrink_messages(messages: list[dict[str, str]], max_chars: int) -> list[dict[str, str]]:
+    """Aggressively compact messages to fit a tight token/byte limit."""
+    if len(messages) <= 2:
+        return [
+            {"role": m["role"], "content": m["content"][: max(max_chars // 2, 1000)]}
+            for m in messages
+        ]
+    head = [
+        messages[0],
+        {"role": messages[1]["role"], "content": messages[1]["content"][: max(max_chars // 3, 1200)]},
+    ]
+    tail = [
+        {"role": m["role"], "content": m["content"][:1000]}
+        for m in messages[2:][-2:]
+    ]
+    return [*head, *tail]
+
+
 class OpenAICompatibleProvider(BaseProvider):
     """Adapter for OpenAI, Groq, Hugging Face Router, OpenRouter, Together, vLLM, or LM Studio."""
 
@@ -261,34 +282,49 @@ class OpenAICompatibleProvider(BaseProvider):
         if self.config.api_key:
             headers["Authorization"] = f"Bearer {self.config.api_key}"
 
-        def _call(model_name: str) -> dict[str, Any]:
+        def _call(model_name: str, msgs: list[dict[str, str]]) -> dict[str, Any]:
             body: dict[str, Any] = {
                 "model": model_name,
-                "messages": messages,
+                "messages": msgs,
                 "temperature": self.config.temperature,
             }
             if self.config.provider in ("openai", "groq"):
                 body["response_format"] = {"type": "json_object"}
             return _post_json(f"{base}/chat/completions", body, headers=headers)
 
+        active_msgs = messages
         try:
-            resp = _call(self.config.model)
+            resp = _call(self.config.model, active_msgs)
         except RuntimeError as exc:
             err_lower = str(exc).lower()
-            if "http 404" not in err_lower and "model_not_found" not in err_lower:
+            is_413 = "http 413" in err_lower or "request too large" in err_lower or "rate_limit_exceeded" in err_lower
+            is_404 = "http 404" in err_lower or "model_not_found" in err_lower
+            if not (is_404 or is_413):
                 raise
+
+            if is_413:
+                wait_match = _TRY_AGAIN_RE.search(str(exc))
+                if wait_match:
+                    val = float(wait_match.group(1))
+                    delay = val / 1000.0 if wait_match.group(2).lower() == "ms" else val
+                    time.sleep(min(max(delay, 1.0), 65.0))
+                active_msgs = _shrink_messages(active_msgs, max_chars=6000)
+
             discovered = _discover_chat_models(base, headers, exclude=self.config.model)
-            if not discovered:
+            candidates = discovered[:4] if is_404 else [self.config.model, *discovered[:3]]
+            if not candidates:
                 raise
             resp = None
             last_exc: RuntimeError = exc
-            for candidate in discovered[:3]:
+            for candidate in candidates:
                 try:
-                    resp = _call(candidate)
+                    resp = _call(candidate, active_msgs)
                     self.config.model = candidate
                     break
                 except RuntimeError as inner_exc:
                     last_exc = inner_exc
+                    if "http 413" in str(inner_exc).lower():
+                        active_msgs = _shrink_messages(active_msgs, max_chars=4000)
             if resp is None:
                 raise last_exc
 
