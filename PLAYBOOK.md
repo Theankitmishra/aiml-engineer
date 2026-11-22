@@ -51,12 +51,11 @@ This file is read at the **start** of every automated run and updated at the **e
 - **GitHub Discovery & Test Path Triage:** Pass `GITHUB_TOKEN=$(gh auth token)` to `discover_github.py` when `gh` is authenticated; if `/search/issues` hits secondary rate limits, inspect bug issues directly in the discovered active repos via `gh issue list`. Check `README.md` for the intended `pytest` path (e.g. `pytest tests/`) when repo-root discovery collects unconfigured `examples/` fixtures.
 - **Python Package Name Derivation (`str.isidentifier()`):** When deriving Python package names from skill slugs or directory names, `.strip("_")` can expose leading digits (e.g. `_1password_` -> `1password`) and non-hyphen punctuation (e.g. `.`) breaks `import`. Normalise characters failing `ch == "_" or f"_{ch}".isidentifier()` to `_` before `.strip("_")`, and prefix `_` whenever `not pkg.isidentifier()`.
 - **Scoped Repo Greps:** Exclude `.venv`, `.git`, and `__pycache__` when running `grep -rn` from a repo root so searches stay fast and avoid virtualenv noise.
+- **GitHub Issue Triage Beyond `/search/issues`:** Always check `gh pr list --search "<num> OR <symbol>" --state all` in addition to `/issues/{num}/timeline`, since contributors sometimes open PRs without linking the issue number in the body.
+- **Lint Scope vs. Mirrored Companion Assets:** When a static lint checks generated package code (e.g. `lint_bundled_asset_path_resolution`), explicitly check whether helper skip predicates (`_is_skipped_path`) are shared with other lints (`lint_import_soundness`) and gate companion-folder exclusion (`scripts/`, `references/`, `assets/`) with a keyword flag so unrelated lints keep their exact scope.
+- **[generative-computing/mellea-skills-compiler#110]** When adding a new export target that uses a shared constant, immediately add it to any consistency tests that enumerate targets to prevent silent coverage gaps.
 
 ---
-
-- **[generative-computing/mellea-skills-compiler#110]** W
-- **[generative-computing/mellea-skills-compiler#110]** h
-- **[generative-computing/mellea-skills-compiler#110]** e
 
 ## 3. Run-End Retrospective Checklist (Loop Update)
 

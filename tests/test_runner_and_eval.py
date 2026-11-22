@@ -295,3 +295,132 @@ def test_submit_fork_pr_flow(tmp_path, monkeypatch):
     assert any(c[:3] == ["gh", "repo", "fork"] for c in calls)
     assert any(c[:2] == ["git", "push"] for c in calls)
     assert any(c[:3] == ["gh", "pr", "create"] for c in calls)
+
+
+def test_normalize_lessons_handles_string_and_list():
+    from aiml_engineer.runner import _normalize_lessons
+
+    assert _normalize_lessons("Single lesson string.") == ["Single lesson string."]
+    assert _normalize_lessons("   ") == []
+    assert _normalize_lessons(["  first  ", "", "second"]) == ["first", "second"]
+    assert _normalize_lessons(None) == []
+
+
+def test_trim_messages_preserves_action_history_and_warns_on_duplicate_reads(tmp_path):
+    from aiml_engineer.runner import _trim_messages
+
+    msgs = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "task"},
+    ]
+    history: list[str] = []
+    for i in range(1, 7):
+        msgs.append({"role": "assistant", "content": f"a{i}"})
+        msgs.append({"role": "user", "content": f"u{i}"})
+        history.append(f"Step {i}: read_file(path='f{i}.py')")
+
+    trimmed = _trim_messages(msgs, max_tail=4, action_history=history)
+    assert len(trimmed) == 7  # 2 head + 1 summary + 4 tail
+    assert "Summary of earlier completed steps" in trimmed[2]["content"]
+    assert "Step 1: read_file(path='f1.py')" in trimmed[2]["content"]
+    assert "Step 5:" not in trimmed[2]["content"]
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    repo_dir = ws / "repos" / "minicalc"
+    base_commit = _init_mini_repo(repo_dir)
+    read_call = json.dumps({"thought": "Read calc", "tool": "read_file", "args": {"path": "calc.py"}})
+    cfg = AgentConfig(workspace_dir=ws, provider="mock", max_steps=2)
+    rec = run_issue_loop(
+        config=cfg,
+        issue={
+            "issue_key": "org/minicalc#2",
+            "repo": "org/minicalc",
+            "repo_url": "https://github.com/org/minicalc",
+            "clone_url": str(repo_dir),
+            "issue_number": 2,
+            "issue_title": "Duplicate read test",
+            "issue_url": "https://github.com/org/minicalc/issues/2",
+            "body_excerpt": "test",
+        },
+        repo_dir=repo_dir,
+        provider=MockProvider(cfg, responses=[read_call, read_call]),
+        base_commit=base_commit,
+        skip_repo_setup=True,
+    )
+    assert "WARNING: Duplicate read/search call" in rec.messages[-1]["content"]
+    assert "REMINDER: Over half of max_steps used" in rec.messages[-1]["content"]
+
+
+def test_discover_github_filters_non_code_and_falls_back_on_search_403(monkeypatch):
+    from datetime import datetime, timezone
+
+    from agent_tools import discover_github
+
+    non_code = {
+        "title": "Integrations: try Tracekit on your agent and report back",
+        "body": "Post a field report.",
+        "labels": [{"name": "open to many"}],
+    }
+    real_bug = {
+        "number": 42,
+        "title": "BUG: crash on empty list",
+        "body": "```python\nfoo([])\n```",
+        "labels": [{"name": "bug"}],
+        "comments": 1,
+        "html_url": "https://github.com/org/repo/issues/42",
+        "repository_url": "https://api.github.com/repos/org/repo",
+    }
+    assert discover_github._is_non_code_issue(non_code) is True
+    assert discover_github._is_non_code_issue(real_bug) is False
+
+    now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+    def fake_get(url: str, token: str | None, max_retries: int = 2):
+        if "/search/issues" in url:
+            raise RuntimeError("GitHub API HTTP 403 secondary rate limit")
+        if "/repos/generative-computing/mellea-skills-compiler/issues?" in url:
+            return [
+                {**non_code, "number": 10, "comments": 0, "html_url": "https://github.com/x/y/issues/10"},
+                real_bug,
+            ]
+        if url.endswith("/repos/generative-computing/mellea-skills-compiler"):
+            return {
+                "html_url": "https://github.com/generative-computing/mellea-skills-compiler",
+                "clone_url": "https://github.com/generative-computing/mellea-skills-compiler.git",
+                "default_branch": "main",
+                "stargazers_count": 120,
+                "language": "Python",
+                "topics": [],
+                "license": {"spdx_id": "Apache-2.0"},
+                "pushed_at": now_iso,
+            }
+        if "/pulls?" in url:
+            return [{"title": "unrelated PR", "body": "", "head": {"ref": "chore/docs"}}]
+        return []
+
+    monkeypatch.setattr(discover_github, "github_get", fake_get)
+    monkeypatch.setattr(discover_github, "FALLBACK_REPOS", ("generative-computing/mellea-skills-compiler",))
+    monkeypatch.setattr(discover_github.time, "sleep", lambda _s: None)
+
+    cands, warning = discover_github.search_candidate_issues(
+        token="tok",
+        attempted=set(),
+        min_stars=50,
+        max_stars=80000,
+        active_days=90,
+        limit=2,
+    )
+    assert warning is not None
+    assert len(cands) == 1
+    assert cands[0]["issue_key"] == "generative-computing/mellea-skills-compiler#42"
+
+    # Also verify has_linked_pr detects open PR referencing the issue in title/branch
+    monkeypatch.setattr(
+        discover_github,
+        "github_get",
+        lambda url, token, max_retries=2: [{"title": "Fix bug (#42)", "body": "", "head": {"ref": "main"}}]
+        if "/pulls?" in url
+        else [],
+    )
+    assert discover_github.has_linked_pr("generative-computing/mellea-skills-compiler", 42, "tok") is True

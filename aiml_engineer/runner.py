@@ -52,10 +52,21 @@ def _python_candidates() -> list[str]:
     return candidates
 
 
+def _normalize_lessons(raw: Any) -> list[str]:
+    """Coerce model-supplied lessons_learned into a clean list of non-empty strings."""
+    if isinstance(raw, str):
+        s = raw.strip()
+        return [s] if s else []
+    if isinstance(raw, (list, tuple)):
+        return [str(item).strip() for item in raw if isinstance(item, (str, int, float)) and str(item).strip()]
+    return []
+
+
 def _trim_messages(
     messages: list[dict[str, str]],
     max_tail: int = 8,
     max_chars: int = 14000,
+    action_history: list[str] | None = None,
 ) -> list[dict[str, str]]:
     """Keep system + initial task + recent turns bounded by both count and character budget."""
     if len(messages) <= 2:
@@ -71,6 +82,19 @@ def _trim_messages(
         tail.append(msg)
         used += cost
     tail.reverse()
+
+    dropped = len(tail) < (len(messages) - 2)
+    if dropped and action_history:
+        cutoff = -(len(tail) // 2) or None
+        earlier = action_history[:cutoff][-12:]
+        if earlier:
+            summary_msg = {
+                "role": "user",
+                "content": "Summary of earlier completed steps (do NOT repeat these read/search calls):\n"
+                + "\n".join(earlier),
+            }
+            return [*head, summary_msg, *tail]
+
     return [*head, *tail]
 
 
@@ -336,9 +360,12 @@ def run_issue_loop(
     review_rounds = 0
     finish_payload: dict[str, Any] = {}
     last_test_output = ""
+    action_history: list[str] = []
+    seen_readonly_calls: set[str] = set()
+    has_edited = False
 
     for _step in range(config.max_steps):
-        trimmed = _trim_messages(messages)
+        trimmed = _trim_messages(messages, action_history=action_history)
         try:
             raw_reply = llm.complete(trimmed)
         except RuntimeError:
@@ -377,9 +404,35 @@ def run_issue_loop(
         result = toolkit.execute(action.tool, action.args)
         if action.tool == "run_tests" and not result.ok:
             repro_failed_before_fix = True
+        if action.tool in ("write_file", "edit_file") and result.ok:
+            has_edited = True
+            seen_readonly_calls.clear()
+
+        call_sig = f"{action.tool}({json.dumps(action.args, sort_keys=True, default=str)})"
+        action_history.append(f"Step {_step + 1}: {call_sig}")
 
         if not result.finished:
-            messages.append({"role": "user", "content": f"Tool result ({action.tool}): {result.output[:2500]}"})
+            prefix = f"[Step {_step + 1}/{config.max_steps}] "
+            warning = ""
+            if action.tool in ("list_files", "read_file", "search_code", "git_status", "git_diff"):
+                if call_sig in seen_readonly_calls:
+                    warning = (
+                        "WARNING: Duplicate read/search call on identical arguments. "
+                        "Do NOT re-read the same lines; write a failing reproduction test or edit the code now.\n"
+                    )
+                seen_readonly_calls.add(call_sig)
+            reminder = ""
+            if _step + 1 >= config.max_steps // 2 and not has_edited:
+                reminder = (
+                    "\nREMINDER: Over half of max_steps used without any write_file/edit_file call. "
+                    "Write your minimal failing test and fix now."
+                )
+            messages.append(
+                {
+                    "role": "user",
+                    "content": f"{warning}{prefix}Tool result ({action.tool}): {result.output[:2500]}{reminder}",
+                }
+            )
             continue
 
         # Independent verification gate when the agent calls finish
@@ -462,7 +515,7 @@ def run_issue_loop(
     patch_diff = toolkit.git_diff().output
     fix_commit = resolved_base
     pr_url: str | None = None
-    lessons = list(finish_payload.get("lessons_learned") or [])
+    lessons = _normalize_lessons(finish_payload.get("lessons_learned"))
     if verification_passed and patch_diff and patch_diff != "(no diff)" and not config.dry_run:
         fix_commit = _commit_changes(
             repo_dir,

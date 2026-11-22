@@ -8,8 +8,10 @@ Set GITHUB_TOKEN in the environment for higher API rate limits.
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -30,6 +32,15 @@ ISSUE_QUERIES = [
     'language:python (langchain OR langgraph OR dspy OR scikit-learn OR optuna) is:issue is:open label:bug no:assignee',
 ]
 
+FALLBACK_REPOS = (
+    "generative-computing/mellea-skills-compiler",
+    "huggingface/smolagents",
+    "stanfordnlp/dspy",
+    "optuna/optuna",
+    "Cygnux-Labs/Tracekit",
+    "secfoo-com/secfoo",
+)
+
 GPU_ONLY_HINTS = (
     "h100",
     "a100",
@@ -42,8 +53,25 @@ GPU_ONLY_HINTS = (
     "vllm-omni",
 )
 
+NON_CODE_HINTS = (
+    "report back",
+    "field-report",
+    "field report",
+    "open to many",
+    "try tracekit on",
+)
 
-def github_get(url: str, token: str | None) -> Any:
+
+def _is_non_code_issue(item: dict[str, Any]) -> bool:
+    """Return True if an issue looks like a field-report or non-code call for feedback."""
+    text = f"{item.get('title', '')}\n{item.get('body') or ''}".lower()
+    if any(hint in text for hint in NON_CODE_HINTS):
+        return True
+    labels = [lbl.get("name", "").lower() for lbl in item.get("labels", []) if isinstance(lbl, dict)]
+    return any(hint in label for label in labels for hint in NON_CODE_HINTS)
+
+
+def github_get(url: str, token: str | None, max_retries: int = 2) -> Any:
     """Perform a GET request to the GitHub REST API and return parsed JSON."""
     headers = {
         "Accept": "application/vnd.github+json",
@@ -53,15 +81,30 @@ def github_get(url: str, token: str | None) -> Any:
     if token:
         headers["Authorization"] = f"Bearer {token}"
 
-    req = urllib.request.Request(url, headers=headers)
-    try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"GitHub API HTTP {exc.code} for {url}: {body[:300]}") from exc
-    except urllib.error.URLError as exc:
-        raise RuntimeError(f"Network error for {url}: {exc.reason}") from exc
+    retryable_codes = {403, 429, 502, 503, 504}
+    for attempt in range(max_retries + 1):
+        req = urllib.request.Request(url, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            if exc.code in retryable_codes and attempt < max_retries:
+                retry_after = exc.headers.get("Retry-After") if exc.headers else None
+                try:
+                    delay = min(max(float(retry_after), 0.0), 15.0) if retry_after is not None else float(4 * (attempt + 1))
+                except ValueError:
+                    delay = float(4 * (attempt + 1))
+                time.sleep(delay)
+                continue
+            raise RuntimeError(f"GitHub API HTTP {exc.code} for {url}: {body[:300]}") from exc
+        except (urllib.error.URLError, TimeoutError, http.client.HTTPException, OSError) as exc:
+            if attempt < max_retries:
+                time.sleep(float(2**attempt))
+                continue
+            reason = getattr(exc, "reason", exc)
+            raise RuntimeError(f"Network error for {url}: {reason}") from exc
+    raise RuntimeError(f"Exhausted retries for {url}")
 
 
 def load_attempted_keys(log_path: Path) -> set[str]:
@@ -93,17 +136,29 @@ def parse_repo_full_name(repository_url: str) -> str:
 
 
 def has_linked_pr(repo_full: str, issue_number: int, token: str | None) -> bool:
-    """Return True if the issue already has a cross-referenced pull request."""
+    """Return True if the issue has a cross-referenced PR or an open PR mentioning it."""
     url = f"{GITHUB_API}/repos/{repo_full}/issues/{issue_number}/timeline?per_page=30"
     try:
         events = github_get(url, token)
     except RuntimeError:
-        return False
+        events = []
     for ev in events:
         if ev.get("event") == "cross-referenced":
             issue_obj = (ev.get("source") or {}).get("issue") or {}
             if issue_obj.get("pull_request"):
                 return True
+
+    pulls_url = f"{GITHUB_API}/repos/{repo_full}/pulls?state=open&per_page=30"
+    try:
+        pulls = github_get(pulls_url, token)
+    except RuntimeError:
+        pulls = []
+    issue_ref_re = re.compile(rf"(?:#|issue[-_/]){issue_number}\b", re.IGNORECASE)
+    for pr in pulls:
+        head_ref = ((pr.get("head") or {}).get("ref")) or ""
+        pr_text = f"{pr.get('title', '')}\n{pr.get('body') or ''}\n{head_ref}"
+        if issue_ref_re.search(pr_text):
+            return True
     return False
 
 
@@ -131,6 +186,87 @@ def score_candidate(issue: dict[str, Any], repo: dict[str, Any]) -> int:
     if repo.get("language") == "Python":
         score += 10
     return score
+
+
+def _collect_eligible_candidate(
+    item: dict[str, Any],
+    repo_full: str,
+    token: str | None,
+    attempted: set[str],
+    seen_keys: set[str],
+    repo_cache: dict[str, dict[str, Any]],
+    repo_lookups: int,
+    max_repo_lookups: int,
+    min_stars: int,
+    max_stars: int,
+    cutoff: datetime,
+) -> tuple[dict[str, Any] | None, int, str | None]:
+    """Validate an issue item and its repo metadata, returning (candidate, updated_lookups, warning)."""
+    if item.get("pull_request"):
+        return None, repo_lookups, None
+    if item.get("assignee") or item.get("assignees"):
+        return None, repo_lookups, None
+    if item.get("comments", 0) > 15:
+        return None, repo_lookups, None
+    if _is_non_code_issue(item):
+        return None, repo_lookups, None
+
+    text = f"{item.get('title', '')}\n{item.get('body') or ''}".lower()
+    if any(hint in text for hint in GPU_ONLY_HINTS):
+        return None, repo_lookups, None
+
+    issue_key = f"{repo_full}#{item['number']}"
+    if issue_key in attempted or issue_key in seen_keys:
+        return None, repo_lookups, None
+    seen_keys.add(issue_key)
+
+    repo = repo_cache.get(repo_full)
+    if repo is None:
+        if repo_lookups >= max_repo_lookups:
+            return None, repo_lookups, None
+        try:
+            repo = github_get(f"{GITHUB_API}/repos/{repo_full}", token)
+        except RuntimeError as exc:
+            return None, repo_lookups, str(exc)
+        repo_lookups += 1
+        repo_cache[repo_full] = repo
+
+    if repo.get("archived") or repo.get("disabled") or repo.get("fork"):
+        return None, repo_lookups, None
+    if repo.get("language") != "Python":
+        return None, repo_lookups, None
+    stars = int(repo.get("stargazers_count", 0))
+    if not (min_stars <= stars <= max_stars):
+        return None, repo_lookups, None
+
+    pushed_at_str = repo.get("pushed_at", "")
+    try:
+        pushed_at = datetime.fromisoformat(pushed_at_str.replace("Z", "+00:00"))
+    except ValueError:
+        return None, repo_lookups, None
+    if pushed_at < cutoff:
+        return None, repo_lookups, None
+
+    cand = {
+        "score": score_candidate(item, repo),
+        "issue_key": issue_key,
+        "repo": repo_full,
+        "repo_url": repo.get("html_url"),
+        "clone_url": repo.get("clone_url"),
+        "default_branch": repo.get("default_branch", "main"),
+        "stars": stars,
+        "language": repo.get("language"),
+        "topics": repo.get("topics", []),
+        "license": (repo.get("license") or {}).get("spdx_id"),
+        "pushed_at": pushed_at_str,
+        "issue_number": item["number"],
+        "issue_title": item["title"],
+        "issue_url": item["html_url"],
+        "labels": [lbl["name"] for lbl in item.get("labels", [])],
+        "comments": item.get("comments", 0),
+        "body_excerpt": (item.get("body") or "")[:1500],
+    }
+    return cand, repo_lookups, None
 
 
 def search_candidate_issues(
@@ -165,72 +301,58 @@ def search_candidate_issues(
             data = github_get(f"{GITHUB_API}/search/issues?{encoded}", token)
         except RuntimeError as exc:
             warning = str(exc)
-            break
+            continue
 
         for item in data.get("items", []):
-            if item.get("pull_request"):
-                continue
-            if item.get("comments", 0) > 15:
-                continue
-            text = f"{item.get('title', '')}\n{item.get('body') or ''}".lower()
-            if any(hint in text for hint in GPU_ONLY_HINTS):
-                continue
-
             repo_full = parse_repo_full_name(item["repository_url"])
-            issue_key = f"{repo_full}#{item['number']}"
-            if issue_key in attempted or issue_key in seen_keys:
-                continue
-            seen_keys.add(issue_key)
-
-            repo = repo_cache.get(repo_full)
-            if repo is None:
-                if repo_lookups >= max_repo_lookups:
-                    break
-                try:
-                    repo = github_get(f"{GITHUB_API}/repos/{repo_full}", token)
-                except RuntimeError as exc:
-                    warning = str(exc)
-                    break
-                repo_lookups += 1
-                repo_cache[repo_full] = repo
-
-            if repo.get("archived") or repo.get("disabled") or repo.get("fork"):
-                continue
-            if repo.get("language") != "Python":
-                continue
-            stars = int(repo.get("stargazers_count", 0))
-            if not (min_stars <= stars <= max_stars):
-                continue
-
-            pushed_at_str = repo.get("pushed_at", "")
-            try:
-                pushed_at = datetime.fromisoformat(pushed_at_str.replace("Z", "+00:00"))
-            except ValueError:
-                continue
-            if pushed_at < cutoff:
-                continue
-
-            candidates.append(
-                {
-                    "score": score_candidate(item, repo),
-                    "issue_key": issue_key,
-                    "repo": repo_full,
-                    "repo_url": repo.get("html_url"),
-                    "clone_url": repo.get("clone_url"),
-                    "default_branch": repo.get("default_branch", "main"),
-                    "stars": stars,
-                    "language": repo.get("language"),
-                    "topics": repo.get("topics", []),
-                    "license": (repo.get("license") or {}).get("spdx_id"),
-                    "pushed_at": pushed_at_str,
-                    "issue_number": item["number"],
-                    "issue_title": item["title"],
-                    "issue_url": item["html_url"],
-                    "labels": [lbl["name"] for lbl in item.get("labels", [])],
-                    "comments": item.get("comments", 0),
-                    "body_excerpt": (item.get("body") or "")[:1500],
-                }
+            cand, repo_lookups, repo_err = _collect_eligible_candidate(
+                item=item,
+                repo_full=repo_full,
+                token=token,
+                attempted=attempted,
+                seen_keys=seen_keys,
+                repo_cache=repo_cache,
+                repo_lookups=repo_lookups,
+                max_repo_lookups=max_repo_lookups,
+                min_stars=min_stars,
+                max_stars=max_stars,
+                cutoff=cutoff,
             )
+            if repo_err:
+                warning = repo_err
+                break
+            if cand is not None:
+                candidates.append(cand)
+
+    if len(candidates) < limit:
+        for repo_full in FALLBACK_REPOS:
+            if len(candidates) >= limit * 2 or repo_lookups >= max_repo_lookups:
+                break
+            url = f"{GITHUB_API}/repos/{repo_full}/issues?state=open&labels=bug&per_page=10"
+            try:
+                items = github_get(url, token)
+            except RuntimeError as exc:
+                warning = str(exc)
+                continue
+            for item in items:
+                cand, repo_lookups, repo_err = _collect_eligible_candidate(
+                    item=item,
+                    repo_full=repo_full,
+                    token=token,
+                    attempted=attempted,
+                    seen_keys=seen_keys,
+                    repo_cache=repo_cache,
+                    repo_lookups=repo_lookups,
+                    max_repo_lookups=max_repo_lookups,
+                    min_stars=min_stars,
+                    max_stars=max_stars,
+                    cutoff=cutoff,
+                )
+                if repo_err:
+                    warning = repo_err
+                    break
+                if cand is not None:
+                    candidates.append(cand)
 
     candidates.sort(key=lambda c: (c["score"], c["stars"]), reverse=True)
     filtered: list[dict[str, Any]] = []
