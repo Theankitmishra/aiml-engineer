@@ -301,6 +301,8 @@ def search_candidate_issues(
             data = github_get(f"{GITHUB_API}/search/issues?{encoded}", token)
         except RuntimeError as exc:
             warning = str(exc)
+            if "secondary rate limit" in warning.lower():
+                break
             continue
 
         for item in data.get("items", []):
@@ -324,9 +326,19 @@ def search_candidate_issues(
             if cand is not None:
                 candidates.append(cand)
 
-    if len(candidates) < limit:
+    candidates.sort(key=lambda c: (c["score"], c["stars"]), reverse=True)
+    filtered: list[dict[str, Any]] = []
+    for cand in candidates:
+        if len(filtered) >= limit:
+            break
+        if has_linked_pr(cand["repo"], cand["issue_number"], token):
+            continue
+        filtered.append(cand)
+
+    if len(filtered) < limit:
+        fallback_candidates: list[dict[str, Any]] = []
         for repo_full in FALLBACK_REPOS:
-            if len(candidates) >= limit * 2 or repo_lookups >= max_repo_lookups:
+            if len(fallback_candidates) >= limit * 2 or repo_lookups >= max_repo_lookups:
                 break
             url = f"{GITHUB_API}/repos/{repo_full}/issues?state=open&labels=bug&per_page=10"
             try:
@@ -352,16 +364,17 @@ def search_candidate_issues(
                     warning = repo_err
                     break
                 if cand is not None:
-                    candidates.append(cand)
+                    fallback_candidates.append(cand)
 
-    candidates.sort(key=lambda c: (c["score"], c["stars"]), reverse=True)
-    filtered: list[dict[str, Any]] = []
-    for cand in candidates:
-        if len(filtered) >= limit:
-            break
-        if has_linked_pr(cand["repo"], cand["issue_number"], token):
-            continue
-        filtered.append(cand)
+        fallback_candidates.sort(key=lambda c: (c["score"], c["stars"]), reverse=True)
+        for cand in fallback_candidates:
+            if len(filtered) >= limit:
+                break
+            if has_linked_pr(cand["repo"], cand["issue_number"], token):
+                continue
+            filtered.append(cand)
+        filtered.sort(key=lambda c: (c["score"], c["stars"]), reverse=True)
+
     return filtered, warning
 
 

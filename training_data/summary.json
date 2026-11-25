@@ -1,10 +1,10 @@
 {
-  "total_trajectories": 8,
-  "eligible_sft": 6,
-  "train_sft_count": 5,
+  "total_trajectories": 11,
+  "eligible_sft": 9,
+  "train_sft_count": 8,
   "val_sft_count": 1,
   "dpo_pairs": 3,
   "ready_for_finetuning": false,
-  "recommendation": "Only 6/20 verified trajectories collected so far. Keep using frontier APIs + few-shot Trajectory RAG until >=20 verified trajectories accumulate before running LoRA weight fine-tuning.",
-  "output_dir": "/home/runner/work/aiml-engineer/aiml-engineer/training_data"
+  "recommendation": "Only 9/20 verified trajectories collected so far. Keep using frontier APIs + few-shot Trajectory RAG until >=20 verified trajectories accumulate before running LoRA weight fine-tuning.",
+  "output_dir": "/Users/ankitkumarmishra/Downloads/Github/training_data"
 }

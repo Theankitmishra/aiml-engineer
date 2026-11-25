@@ -27,10 +27,11 @@ This file is read at the **start** of every automated run and updated at the **e
      - Are there any unintended side effects, duplicated logic, or leftover debug files?
      - Are test assertions strict and meaningful (no tautologies or over-mocking)?
 
-5. **Review-Before-Push PR Safety:**
-   - Never push or open a PR on someone else's repository automatically.
-   - Commit cleanly on a local branch (`fix/issue-<num>-<slug>` or `feat/issue-<num>-<slug>`).
-   - Write a complete `drafts/<repo>__issue_<num>_PR_DRAFT.md` with issue link, root cause, diff summary, test commands/outputs, and push instructions for human approval.
+5. **Automated Fork, Push & PR Submission:**
+   - Commit cleanly on a local branch (`fix/issue-<num>` or `feat/issue-<num>`).
+   - Write a complete `drafts/<owner>__<repo>__issue_<num>_PR_DRAFT.md` with issue link, root cause, diff summary, and test commands/outputs.
+   - Push the branch to your fork (`gh repo fork --remote=true --remote-name=fork && git push -u fork <branch>`) and open the PR (`gh pr create --repo <owner/repo> --head Theankitmishra:<branch> --title "..." --body-file ...`).
+   - At the end of each run, commit and push updated tracking artifacts (`drafts/`, `PLAYBOOK.md`, `runs_log.jsonl`, `trajectories/`, `eval/`, `training_data/`) to `origin/main` (`Theankitmishra/aiml-engineer`).
 
 ---
 
@@ -54,6 +55,12 @@ This file is read at the **start** of every automated run and updated at the **e
 - **GitHub Issue Triage Beyond `/search/issues`:** Always check `gh pr list --search "<num> OR <symbol>" --state all` in addition to `/issues/{num}/timeline`, since contributors sometimes open PRs without linking the issue number in the body.
 - **Lint Scope vs. Mirrored Companion Assets:** When a static lint checks generated package code (e.g. `lint_bundled_asset_path_resolution`), explicitly check whether helper skip predicates (`_is_skipped_path`) are shared with other lints (`lint_import_soundness`) and gate companion-folder exclusion (`scripts/`, `references/`, `assets/`) with a keyword flag so unrelated lints keep their exact scope.
 - **[generative-computing/mellea-skills-compiler#110]** When adding a new export target that uses a shared constant, immediately add it to any consistency tests that enumerate targets to prevent silent coverage gaps.
+- **Matching `FileNotFoundError` / `NotADirectoryError` Against Fixture Inputs (`smoke_check.py`):** Check both `exc.filename` / `exc.filename2` (normalized via `.resolve(strict=False)` relative to `run_dir`, plus `is_relative_to`) and bounded regex matches on `str(exc)` because manual `FileNotFoundError(f"...")` raises leave `exc.filename` as `None`.
+- **Preventing False Skips on Existing Input Directories:** Verify the candidate input path does not exist on disk (or is not a directory for `NotADirectoryError`) before matching, so an internal missing package file inside an existing `work_dir` still fails the smoke check instead of silently skipping.
+- **Cross-Provider Message Formatting & Unset `model_provider` (`langchain-google-vertexai`):** Before porting `model_provider != "anthropic"` content-block filters from `langchain-anthropic`, check whether the target chat model stamps `response_metadata["model_provider"]`. Because `ChatAnthropicVertex` leaves `model_provider` unset, filter `function_call` when `model_provider != "anthropic"`, but filter `reasoning` only when `not isinstance(message, AIMessage) or model_provider not in (None, "anthropic")` so its own v1 `reasoning` → `thinking` conversion keeps working.
+- **Monorepo Subpackage Tooling (`libs/<pkg>/pyproject.toml`):** In monorepos with per-package `pyproject.toml`, install `libs/<pkg>` editable with its extras into a repo-root `.venv`, and invoke `pytest` from `libs/<pkg>` and `ruff check/format --config libs/<pkg>/pyproject.toml` so subpackage pytest markers, warning filters, and ruff rules are respected.
+- **Unmerged-PR & Maintainer-Status Triage:** Before implementing a discovered issue, check open PRs and recent issue comments to skip issues whose target code lives only in unmerged stacked PRs (e.g. `EvoScientist#899`/`#900`) or whose maintainers explicitly deferred the work (`PCNtoolkit#652`).
+- **Package-Anchored Asset Resolution (`__file__`) & CWD-Decoupled Tests:** Resolve compiler assets (`.claude/`, `.pi/`) from package/repo anchors (`Path(__file__).resolve().parents[...]`) and fail with `FileNotFoundError` (or log a `WARNING` on documented fallbacks) rather than silently reading CWD; update existing tests that previously relied on `monkeypatch.chdir(tmp_path)` to override module constants or pass explicit source paths.
 
 ---
 
