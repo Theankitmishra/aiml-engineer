@@ -6,5 +6,5 @@
   "dpo_pairs": 3,
   "ready_for_finetuning": false,
   "recommendation": "Only 12/20 verified trajectories collected so far. Keep using frontier APIs + few-shot Trajectory RAG until >=20 verified trajectories accumulate before running LoRA weight fine-tuning.",
-  "output_dir": "/Users/ankitkumarmishra/Downloads/Github/training_data"
+  "output_dir": "/home/runner/work/aiml-engineer/aiml-engineer/training_data"
 }
